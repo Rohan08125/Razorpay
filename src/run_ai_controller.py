@@ -3,38 +3,39 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 from pathlib import Path
 
 from ai_controller import build_case
-from investigate_exception import load_data
+from investigate_exception import ExceptionInvestigator
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run AI-ready controller over exception cases")
+    parser = argparse.ArgumentParser(description="Run AI-ready controller over settlement exceptions")
     parser.add_argument("--data-dir", type=Path, default=Path("data"))
     parser.add_argument("--results-dir", type=Path, default=Path("results"))
     args = parser.parse_args()
 
-    data = load_data(args.data_dir)
+    investigator = ExceptionInvestigator(args.data_dir)
     reconciliation = json.loads(
         (args.results_dir / "reconciliation_summary.json").read_text(encoding="utf-8")
     )
 
-    cases = []
-    settlement_results_path = args.results_dir / "settlement_reconciliation.csv"
-    import csv
-    with settlement_results_path.open(newline="", encoding="utf-8") as file:
+    with (args.results_dir / "settlement_reconciliation.csv").open(
+        newline="", encoding="utf-8"
+    ) as file:
         rows = list(csv.DictReader(file))
 
     exception_ids = [row["settlement_id"] for row in rows if row["status"] == "EXCEPTION"]
-    for settlement_id in exception_ids:
-        cases.append(build_case(settlement_id, data))
+    cases = [build_case(settlement_id, investigator) for settlement_id in exception_ids]
 
     output = args.results_dir / "controller_cases.json"
     output.write_text(json.dumps(cases, indent=2), encoding="utf-8")
 
-    escalated = sum(case["recommended_action"] == "ESCALATE_FOR_MANUAL_REVIEW" for case in cases)
+    escalated = sum(
+        case["recommended_action"] != "AUTO_RECONCILE" for case in cases
+    )
     summary = {
         "settlement_exceptions": len(exception_ids),
         "cases_generated": len(cases),
