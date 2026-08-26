@@ -128,7 +128,11 @@ def main() -> None:
         expected_action = normalize_action(expected.get("recommended_action"))
         confidence = float(ai_case.get("confidence", 0.0))
         confidence_sum += confidence
-        if confidence == 0.0:
+
+        # Fallback status is explicit. Older result files used confidence=0
+        # as a proxy, so retain that as a backward-compatible fallback signal.
+        explanation_source = ai_case.get("explanation_source")
+        if explanation_source == "deterministic_evidence_fallback" or confidence == 0.0:
             fallback_cases += 1
 
         root_match = ai_root == expected_root
