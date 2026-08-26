@@ -23,8 +23,6 @@ Do NOT explain your thinking.
 Return ONLY valid JSON with exactly two fields:
 - rationale: one short factual sentence
 - evidence_used: a list of 1 to 3 short evidence statements
-
-Do not include any other fields.
 """
 
 
@@ -121,6 +119,59 @@ def _evidence_confidence(root_cause: str, evidence: dict[str, Any]) -> float:
     return round(min(score, 0.99), 2)
 
 
+def _fallback_explanation(
+    root_cause: str,
+    evidence: dict[str, Any],
+) -> tuple[str, list[str]]:
+    """Produce an honest evidence-based explanation if the tiny model fails JSON."""
+    settlement = evidence.get("settlement", {})
+    recorded_net = settlement.get("net_amount")
+    item_count = evidence.get("item_count", 0)
+    bank_count = evidence.get("bank_transaction_count", 0)
+
+    evidence_used: list[str] = []
+    if recorded_net is not None:
+        evidence_used.append(f"Recorded settlement net is ₹{float(recorded_net):,.2f}.")
+    evidence_used.append(f"Settlement contains {item_count} settlement items.")
+    evidence_used.append(f"{bank_count} bank transaction(s) were available for comparison.")
+
+    if root_cause == "NONE":
+        rationale = "Deterministic reconciliation found no exception in the supplied settlement evidence."
+    elif root_cause == "SETTLEMENT_TOTAL_MISMATCH":
+        rationale = "Deterministic reconciliation identified a settlement total mismatch from the supplied settlement evidence."
+    elif root_cause == "SETTLEMENT_ITEM_COUNT_MISMATCH":
+        rationale = "Deterministic reconciliation identified a settlement item-count mismatch from the supplied settlement evidence."
+    else:
+        rationale = f"Deterministic reconciliation identified {root_cause} from the supplied evidence."
+
+    return rationale, evidence_used[:3]
+
+
+def _parse_explanation(content: str) -> dict[str, Any] | None:
+    """Parse a tiny-model JSON response, including fenced/raw JSON."""
+    if not content:
+        return None
+
+    try:
+        parsed = json.loads(content)
+        if isinstance(parsed, dict):
+            return parsed
+    except json.JSONDecodeError:
+        pass
+
+    start = content.find("{")
+    end = content.rfind("}")
+    if start != -1 and end > start:
+        try:
+            parsed = json.loads(content[start : end + 1])
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+
+    return None
+
+
 def investigate(case: dict[str, Any], data_dir: str = "data") -> dict[str, Any]:
     from ollama import Client
 
@@ -146,13 +197,16 @@ def investigate(case: dict[str, Any], data_dir: str = "data") -> dict[str, Any]:
     }
 
     prompt = (
-        "Return ONLY the two-field JSON object.\n"
-        "Explain the deterministic decision using only the evidence.\n"
+        "Return ONLY JSON. Exactly two keys: rationale and evidence_used.\n"
+        "Use only the supplied evidence. Do not change the decision.\n"
         "CASE:\n"
         + json.dumps(decision_input, ensure_ascii=False)
     )
 
     client = Client(host=os.getenv("OLLAMA_HOST", "http://localhost:11434"))
+
+    # First try Ollama structured output. The schema is intentionally tiny so
+    # the 0.6B model has as little formatting work as possible.
     response = client.chat(
         model=model,
         messages=[
@@ -169,27 +223,53 @@ def investigate(case: dict[str, Any], data_dir: str = "data") -> dict[str, Any]:
         keep_alive="5m",
     )
 
-    content = response.message.content or ""
-    if not content:
-        raise RuntimeError("Ollama returned no explanation.")
+    explanation = _parse_explanation(response.message.content or "")
+    source = "ollama"
 
-    try:
-        explanation = json.loads(content)
-    except json.JSONDecodeError:
-        start = content.find("{")
-        end = content.rfind("}")
-        explanation = None
-        if start != -1 and end > start:
-            try:
-                explanation = json.loads(content[start:end + 1])
-            except json.JSONDecodeError:
-                pass
+    # Tiny local models can still occasionally violate structured output.
+    # Retry once with generic JSON mode before using the honest deterministic
+    # evidence explanation.
+    if explanation is None:
+        retry = client.chat(
+            model=model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Return one JSON object only. Keys: rationale, evidence_used. "
+                        "No markdown. No extra text."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        "Explain this decision using only these facts:\n"
+                        + json.dumps(decision_input, ensure_ascii=False)
+                    ),
+                },
+            ],
+            think=False,
+            format="json",
+            options={
+                "temperature": 0,
+                "num_predict": 100,
+                "num_ctx": 2048,
+            },
+            keep_alive="5m",
+        )
+        explanation = _parse_explanation(retry.message.content or "")
 
-        if explanation is None:
-            explanation = {
-                "rationale": "Deterministic decision retained because the local model returned malformed JSON.",
-                "evidence_used": [],
-            }
+    if explanation is None:
+        rationale, evidence_used = _fallback_explanation(
+            deterministic_root_cause,
+            evidence,
+        )
+        source = "deterministic_evidence_fallback"
+    else:
+        rationale = str(explanation.get("rationale") or "Deterministic decision retained.")
+        evidence_used = explanation.get("evidence_used") or []
+        if not isinstance(evidence_used, list):
+            evidence_used = [str(evidence_used)]
 
     # FINAL SAFETY GUARD: the LLM can explain the decision, but cannot make it.
     return {
@@ -197,9 +277,10 @@ def investigate(case: dict[str, Any], data_dir: str = "data") -> dict[str, Any]:
         "confidence": confidence,
         "financial_impact": float(case.get("financial_impact", 0.0)),
         "action": deterministic_action,
-        "rationale": explanation.get("rationale", "Deterministic decision retained."),
-        "evidence_used": explanation.get("evidence_used", []),
+        "rationale": rationale,
+        "evidence_used": evidence_used[:3],
         "provider": "ollama",
         "model": model,
         "tool_calls": 1,
+        "explanation_source": source,
     }
