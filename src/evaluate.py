@@ -1,11 +1,11 @@
-"""Evaluate reconciliation results against hidden corruption ground truth."""
+"""Evaluate deterministic reconciliation against settlement-level ground truth."""
 
 from __future__ import annotations
 
 import argparse
 import csv
 import json
-from collections import Counter, defaultdict
+from collections import defaultdict
 from pathlib import Path
 
 
@@ -21,27 +21,36 @@ def precision_recall_f1(tp: int, fp: int, fn: int) -> tuple[float, float, float]
     return precision, recall, f1
 
 
+# Ground-truth corruption -> observable reconciliation symptom.
+OBSERVABLES = {
+    "MISSING_SETTLEMENT_ITEM": {"PAYMENT_COUNT_MISMATCH"},
+    "DUPLICATE_SETTLEMENT_ITEM": {"PAYMENT_COUNT_MISMATCH"},
+    "FEE_MISMATCH": {"FEE_TOTAL_MISMATCH", "NET_TOTAL_MISMATCH"},
+    "AMOUNT_MISMATCH": {"GROSS_AMOUNT_MISMATCH"},
+    "MISSING_BANK_TRANSACTION": {"MISSING_BANK_TRANSACTION"},
+    "DUPLICATE_BANK_TRANSACTION": {"DUPLICATE_BANK_TRANSACTION"},
+    "BANK_AMOUNT_MISMATCH": {"BANK_AMOUNT_MISMATCH"},
+    "WRONG_BANK_REFERENCE": {"MISSING_BANK_TRANSACTION"},
+    "PARTIAL_SETTLEMENT": {"BANK_AMOUNT_MISMATCH"},
+    "UNEXPLAINED_VARIANCE": {"BANK_AMOUNT_MISMATCH"},
+}
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Evaluate deterministic reconciliation")
+    parser = argparse.ArgumentParser(description="Evaluate deterministic financial reconciliation")
     parser.add_argument("--data-dir", type=Path, default=Path("data"))
     parser.add_argument("--results-dir", type=Path, default=Path("results"))
     args = parser.parse_args()
 
     truth = read_csv(args.data_dir / "ground_truth.csv")
-    payment_results = read_csv(args.results_dir / "payment_reconciliation.csv")
     settlement_results = read_csv(args.results_dir / "settlement_reconciliation.csv")
     bank_results = read_csv(args.results_dir / "bank_reconciliation.csv")
 
-    # Ground truth is an evaluation-only oracle. We map each injected issue to
-    # the reconciliation layer where it should be observable.
     expected: dict[str, set[str]] = defaultdict(set)
     for row in truth:
         expected[row["entity_id"]].add(row["corruption_type"])
 
     detected: dict[str, set[str]] = defaultdict(set)
-    for row in payment_results:
-        if row["issues"]:
-            detected[row["payment_id"]].update(row["issues"].split("|"))
     for row in settlement_results:
         if row["issues"]:
             detected[row["settlement_id"]].update(row["issues"].split("|"))
@@ -49,46 +58,35 @@ def main() -> None:
         if row["issues"]:
             detected[row["settlement_id"]].update(row["issues"].split("|"))
 
-    # Directly comparable labels. Some ground-truth types intentionally map to
-    # the engine's observable symptom rather than having identical names.
-    mappings = {
-        "MISSING_SETTLEMENT_ITEM": "MISSING_SETTLEMENT_ITEM",
-        "DUPLICATE_SETTLEMENT_ITEM": "DUPLICATE_SETTLEMENT_ITEM",
-        "FEE_MISMATCH": "FEE_MISMATCH",
-        "AMOUNT_MISMATCH": "AMOUNT_MISMATCH",
-        "MISSING_BANK_TRANSACTION": "MISSING_BANK_TRANSACTION",
-        "DUPLICATE_BANK_TRANSACTION": "DUPLICATE_BANK_TRANSACTION",
-        "BANK_AMOUNT_MISMATCH": "BANK_AMOUNT_MISMATCH",
-        "WRONG_BANK_REFERENCE": "MISSING_BANK_TRANSACTION",
-        "PARTIAL_SETTLEMENT": "BANK_AMOUNT_MISMATCH",
-        "UNEXPLAINED_VARIANCE": "BANK_AMOUNT_MISMATCH",
-    }
-
     per_type: dict[str, dict[str, int | float]] = {}
-    for corruption_type in sorted({row["corruption_type"] for row in truth}):
-        tp = fp = fn = 0
-        for row in truth:
-            if row["corruption_type"] != corruption_type:
-                continue
+    for corruption_type in sorted(OBSERVABLES):
+        expected_cases = [
+            row for row in truth if row["corruption_type"] == corruption_type
+        ]
+        observable_labels = OBSERVABLES[corruption_type]
+        tp = fn = 0
+
+        for row in expected_cases:
             entity_id = row["entity_id"]
-            observable = mappings[corruption_type]
-            if observable in detected.get(entity_id, set()):
+            if detected.get(entity_id, set()) & observable_labels:
                 tp += 1
             else:
                 fn += 1
 
-        # Count false positives only for this observable label on entities with
-        # no matching ground-truth label.
-        observable = mappings[corruption_type]
-        for entity_id, labels in detected.items():
-            if observable in labels and observable not in {
-                mappings.get(label) for label in expected.get(entity_id, set())
-            }:
+        fp = 0
+        for entity_id, observed in detected.items():
+            if not observed & observable_labels:
+                continue
+            expected_types = expected.get(entity_id, set())
+            expected_observables = set().union(
+                *(OBSERVABLES.get(t, set()) for t in expected_types)
+            ) if expected_types else set()
+            if not (observed & observable_labels & expected_observables):
                 fp += 1
 
         precision, recall, f1 = precision_recall_f1(tp, fp, fn)
         per_type[corruption_type] = {
-            "ground_truth_cases": tp + fn,
+            "ground_truth_cases": len(expected_cases),
             "true_positives": tp,
             "false_positives": fp,
             "false_negatives": fn,
@@ -99,18 +97,18 @@ def main() -> None:
 
     summary = {
         "ground_truth_cases": len(truth),
-        "unique_corrupted_entities": len(expected),
+        "unique_corrupted_settlements": len(expected),
+        "observed_exception_settlements": len(detected),
         "types": per_type,
         "notes": [
-            "Evaluation uses ground_truth.csv only and is never consumed by reconciliation.",
-            "Some corruption types are evaluated against observable symptoms produced by the deterministic engine.",
+            "Ground truth is evaluation-only and is never consumed by reconciliation.",
+            "Each corruption type is scored against the reconciliation layer where its observable symptom appears.",
         ],
     }
 
     args.results_dir.mkdir(parents=True, exist_ok=True)
-    with (args.results_dir / "evaluation_summary.json").open("w", encoding="utf-8") as file:
-        json.dump(summary, file, indent=2)
-
+    output = args.results_dir / "evaluation_summary.json"
+    output.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(json.dumps(summary, indent=2))
 
 
