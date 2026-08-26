@@ -1,4 +1,4 @@
-# Razorpay — Financial Reconciliation AI
+# Razorpay Financial Reconciliation AI
 
 A local-first financial reconciliation system that combines deterministic accounting checks with a small local Qwen model for evidence-based exception explanations.
 
@@ -6,12 +6,23 @@ A local-first financial reconciliation system that combines deterministic accoun
 
 Financial reconciliation should be **correct before it is intelligent**. This project therefore separates the financial decision from the language model:
 
-- The deterministic engine calculates reconciliation outcomes and financial impact.
+- The deterministic engine calculates reconciliation outcomes, root causes, financial impact, and recommended actions.
 - A compact evidence packet is sent to local Ollama/Qwen for a human-readable explanation.
 - The model cannot override the deterministic root cause or recommended action.
-- Invalid model output falls back to a deterministic explanation.
+- Invalid model output falls back to a deterministic evidence explanation.
 
-This makes the AI layer useful without putting financial correctness behind an LLM.
+The core design principle is simple: **the LLM explains the financial decision; it does not make the financial decision.**
+
+## Problem
+
+Settlement operations need to reconcile:
+
+- customer payments
+- settlement items
+- settlement batch totals
+- bank credits
+
+Failures are rarely a single obvious mismatch. Missing items, duplicate credits, fee drift, wrong references, amount corruption, and partial settlements can produce overlapping symptoms. A useful reconciliation system therefore needs reproducible rules, auditable evidence, and conservative financial actions.
 
 ## What it does
 
@@ -25,86 +36,110 @@ This makes the AI layer useful without putting financial correctness behind an L
   - wrong bank references
   - partial settlements
   - unexplained variance
-- Produces a Streamlit dashboard for exception investigation.
-- Benchmarks the deterministic engine against controlled corruption.
-- Benchmarks Qwen for consistency with deterministic decisions.
+- Builds compact evidence packets for local Qwen inference.
+- Provides a Streamlit operations dashboard for exception investigation.
+- Benchmarks the deterministic engine against controlled corruption with ground truth.
+- Benchmarks Qwen for consistency with deterministic root causes and actions.
 
 ## Architecture
 
 ```text
-CSV data
-   │
-   ▼
-Deterministic reconciliation engine
-   │
-   ├── root cause
-   ├── financial impact
-   └── recommended action
-           │
-           ▼
-   Compact evidence packet
-           │
-           ▼
-     Ollama / Qwen 0.6B
-           │
-           ▼
-  rationale + evidence_used
+Generated CSV data
+        │
+        ▼
+Deterministic reconciliation + investigation
+        │
+        ├── root cause
+        ├── financial impact
+        └── recommended action
+                 │
+                 ▼
+        Compact evidence packet
+                 │
+                 ▼
+           Ollama / Qwen 0.6B
+                 │
+                 ▼
+       rationale + evidence_used
 
-Final decision = deterministic engine
-LLM = explanation layer only
+Financial decision authority: deterministic engine
+LLM authority: explanation only
 ```
 
-## Local setup
+## Deterministic engine
 
-Create and activate a virtual environment, then install dependencies:
+The deterministic layer is the financial source of truth for:
 
-```bash
-python -m venv .venv
-# Windows
-.venv\\Scripts\\activate
-pip install -r requirements.txt
-```
+- exception detection
+- root-cause classification
+- financial impact
+- recommended action
 
-Install Ollama and pull the configured local model:
+The settlement investigation validates each settlement item against the original payment gross amount. This catches controlled `AMOUNT_MISMATCH` corruption even when the item count and aggregate settlement net still appear internally consistent.
 
-```bash
-ollama pull qwen3:0.6b
-```
+## Corruption benchmark
 
-The agent defaults to:
+The controlled corruption suite contains 666 cases across:
 
-```text
-OLLAMA_HOST=http://localhost:11434
-OLLAMA_MODEL=qwen3:0.6b
-```
+- `MISSING_SETTLEMENT_ITEM`
+- `DUPLICATE_SETTLEMENT_ITEM`
+- `FEE_MISMATCH`
+- `AMOUNT_MISMATCH`
+- `MISSING_BANK_TRANSACTION`
+- `DUPLICATE_BANK_TRANSACTION`
+- `BANK_AMOUNT_MISMATCH`
+- `WRONG_BANK_REFERENCE`
+- `PARTIAL_SETTLEMENT`
+- `UNEXPLAINED_VARIANCE`
 
-## Run locally
+The benchmark is designed so the deterministic engine can be evaluated against explicit ground truth rather than against model-generated labels.
 
-The project expects the generated dataset under `data/` and reconciliation outputs under `results/`. These directories are intentionally ignored by Git.
+## AI explanation layer
 
-Run the local Qwen layer on a sample of exceptions:
+The local AI layer uses Ollama with `qwen3:0.6b`. The model is intentionally small so it can run locally on modest hardware.
 
-```bash
-py src\\run_ollama_agent.py --limit 50
-```
+The pipeline is:
 
-Evaluate the deterministic engine and Qwen consistency layer:
+1. Build a deterministic investigation case.
+2. Construct a compact evidence packet rather than sending the full dataset.
+3. Ask Qwen for strict JSON containing only a rationale and evidence list.
+4. Retry once in generic JSON mode if structured output fails.
+5. Fall back to deterministic evidence wording if the model still fails.
+6. Restore the deterministic root cause and action before returning the result.
 
-```bash
-py src\\evaluate_ollama.py
-```
+## Safety boundary
 
-Launch the dashboard:
+The LLM is **not trusted to calculate or authorize financial outcomes**.
 
-```bash
-streamlit run app.py
-```
+- The deterministic engine decides the root cause.
+- The deterministic engine decides the action.
+- The deterministic engine decides financial impact.
+- Qwen only produces an explanation of those already-computed facts.
+- A final safety guard restores the deterministic decision before the result is returned.
 
-Use **Refresh local results** in the dashboard after rerunning the evaluation scripts.
+If Qwen times out, returns malformed JSON, or otherwise fails to provide usable structured output, the system returns a deterministic evidence explanation instead. The dashboard explicitly labels whether the displayed explanation came from Qwen or the deterministic fallback.
 
-## Benchmarks
+## Streamlit dashboard
 
-The controlled corruption benchmark currently reports:
+`app.py` provides an operations-style dashboard with:
+
+- settlement and bank reconciliation KPIs
+- exception explorer
+- deterministic finding details
+- observable issue codes
+- on-demand local Qwen investigation
+- confidence and tool-call metrics
+- explanation-source labeling
+- ground-truth benchmark metrics
+- local Qwen consistency metrics
+- settlement filtering and overview
+- a refresh control for newly generated local results
+
+The UI is intentionally careful not to imply that the model independently made the financial decision.
+
+## Benchmark results
+
+The current recorded deterministic benchmark reports:
 
 - **666/666** corrupted settlements detected
 - **0** missed corrupted settlements
@@ -114,27 +149,92 @@ The controlled corruption benchmark currently reports:
 - **99.9%** detection F1
 - **99.7%** ground-truth root-cause accuracy
 
-The corruption suite contains 666 controlled cases across settlement-item, fee, amount, bank-transaction, partial-settlement, and variance failure modes.
+The latest local Qwen consistency run reported:
 
-The local Qwen consistency benchmark evaluates whether the explanation layer preserves deterministic decisions. The latest local run achieved **100% root-cause agreement** and **100% action agreement** across 50 evaluated cases. Qwen fallback rate is reported from actual `explanation_source` values and can vary between local runs depending on model output quality.
+- **50** cases evaluated
+- **100%** root-cause agreement
+- **100%** action agreement
+- **0** disagreements
+- **58%** fallback rate in the recorded run
 
-## Safety boundary
+The fallback rate is expected to vary with local model output quality. It does not weaken the financial safety boundary because fallback preserves the deterministic decision.
 
-The LLM is **not trusted to calculate or authorize financial outcomes**. It receives deterministic evidence and the already-computed root cause/action. A final safety guard restores those deterministic values before returning the decision.
+## Local setup
 
-If Qwen returns malformed or otherwise unusable structured output, the system uses a deterministic evidence explanation instead. The dashboard exposes whether the displayed explanation came from Qwen or the deterministic fallback.
+Create and activate a virtual environment, then install dependencies:
+
+```bash
+python -m venv .venv
+```
+
+Windows:
+
+```bash
+.venv\\Scripts\\activate
+```
+
+Install Python dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+Install Ollama and pull the configured local model:
+
+```bash
+ollama pull qwen3:0.6b
+```
+
+Environment defaults:
+
+```text
+OLLAMA_HOST=http://localhost:11434
+OLLAMA_MODEL=qwen3:0.6b
+```
+
+## Running locally
+
+The project expects the generated dataset under `data/` and reconciliation outputs under `results/`. These directories are intentionally ignored by Git.
+
+Run deterministic reconciliation:
+
+```bash
+python src\\reconcile.py
+```
+
+Run the local Qwen sample benchmark:
+
+```bash
+python src\\run_ollama_agent.py --limit 50
+python src\\evaluate_ollama.py
+```
+
+Launch the dashboard:
+
+```bash
+streamlit run app.py
+```
+
+Use **Refresh local results** in the dashboard after rerunning reconciliation or Ollama evaluation scripts.
+
+Run the automated tests:
+
+```bash
+pytest -q
+```
 
 ## Repository hygiene
 
-Generated datasets and outputs are deliberately excluded from source control:
+Generated datasets and local outputs are deliberately excluded from source control:
 
 ```text
 data/
 results/
 src/__pycache__/
+.venv/
 ```
 
-The repository includes lightweight GitHub Actions CI that compiles the Python sources and checks that generated artifacts are not accidentally committed.
+The repository CI compiles Python sources, runs the unit tests, and verifies that generated artifacts are not accidentally committed.
 
 ## Project structure
 
@@ -142,6 +242,7 @@ The repository includes lightweight GitHub Actions CI that compiles the Python s
 Razorpay/
 ├── app.py                         # Streamlit dashboard
 ├── requirements.txt               # Python dependencies
+├── tests/                         # Lightweight deterministic/AI safety tests
 ├── src/
 │   ├── finance_tools.py           # Data access / financial tools
 │   ├── investigate_exception.py   # Deterministic investigation
@@ -149,9 +250,25 @@ Razorpay/
 │   ├── ollama_agent.py            # Local Qwen explanation layer
 │   ├── run_ollama_agent.py        # Batch local inference
 │   └── evaluate_ollama.py         # Reconciliation + AI benchmark
-└── .github/workflows/ci.yml       # Lightweight repository CI
+└── .github/workflows/ci.yml       # GitHub Actions CI
 ```
+
+## Limitations
+
+- The dataset is synthetic and is not production Razorpay data.
+- The tiny local model can frequently fall back to deterministic evidence wording.
+- Benchmark artifacts depend on a working local Python/Ollama environment.
+- The Streamlit app reads generated local results rather than orchestrating the complete data pipeline itself.
+- Some bank-side corruption categories intentionally collapse to the same operational root cause because the system prioritizes actionable review paths over an unnecessarily granular taxonomy.
+
+## Future improvements
+
+- Add more deterministic tests for edge-case bank reference conflicts.
+- Improve compact evidence formatting to reduce tiny-model fallback frequency.
+- Add richer payment-level drill-down in the dashboard.
+- Track benchmark history across repeated local runs.
+- Introduce typed result models for stronger validation across scripts.
 
 ## Key design takeaway
 
-The project deliberately uses **deterministic logic for financial truth and an LLM for explanation**. That separation is the core engineering decision: the model can make the investigation easier to understand, but it cannot silently change what the reconciliation engine decided.
+The project deliberately uses **deterministic logic for financial truth and an LLM for explanation**. The model can make investigation easier to understand, but it cannot silently change what the reconciliation engine decided.
