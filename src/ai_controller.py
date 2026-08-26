@@ -1,9 +1,4 @@
-"""Evidence-first controller interface for finance exception investigation.
-
-The finance rules remain deterministic. An LLM can consume the structured case
-packet produced here to explain, classify, and recommend an action without
-being allowed to alter financial records.
-"""
+"""Evidence-first controller interface for finance exception investigation."""
 
 from __future__ import annotations
 
@@ -11,7 +6,7 @@ import argparse
 import json
 from pathlib import Path
 
-from investigate_exception import load_data, investigate_settlement
+from investigate_exception import ExceptionInvestigator
 
 
 def confidence_for(root_cause: str, evidence_count: int) -> float:
@@ -26,20 +21,43 @@ def confidence_for(root_cause: str, evidence_count: int) -> float:
     return round(min(0.99, base + min(evidence_count, 3) * 0.01), 2)
 
 
-def build_case(settlement_id: str, data: dict) -> dict:
-    finding = investigate_settlement(settlement_id, data)
-    confidence = confidence_for(finding["root_cause"], len(finding["evidence"]))
-    recommendation = finding["recommendation"]
+def build_case(settlement_id: str, investigator: ExceptionInvestigator) -> dict:
+    finding = investigator.investigate_settlement(settlement_id)
+    if "error" in finding:
+        return {
+            "case_id": settlement_id,
+            "root_cause": "DATA_ERROR",
+            "confidence": 0.0,
+            "financial_impact": 0.0,
+            "evidence": [finding["error"]],
+            "recommended_action": "ESCALATE_FOR_MANUAL_REVIEW",
+            "explainable": True,
+        }
 
-    if finding["root_cause"] == "NONE":
-        recommendation = "ESCALATE_FOR_MANUAL_REVIEW"
+    evidence = finding.get("evidence", [])
+    root_cause = finding["root_cause"]
+    confidence = confidence_for(root_cause, len(evidence))
+    financial_impact = 0.0
+
+    for text in evidence:
+        if "variance ₹" in text:
+            try:
+                financial_impact = abs(float(text.split("variance ₹", 1)[1]))
+            except ValueError:
+                financial_impact = 0.0
+            break
+
+    recommendations = finding.get("recommendations", ["Escalate for manual review"])
+    recommendation = recommendations[0] if recommendations else "Escalate for manual review"
+    if root_cause == "NONE":
+        recommendation = "AUTO_RECONCILE"
 
     return {
         "case_id": settlement_id,
-        "root_cause": finding["root_cause"],
+        "root_cause": root_cause,
         "confidence": confidence,
-        "financial_impact": finding.get("financial_impact", 0.0),
-        "evidence": finding["evidence"],
+        "financial_impact": round(financial_impact, 2),
+        "evidence": evidence,
         "recommended_action": recommendation,
         "explainable": True,
     }
@@ -51,16 +69,13 @@ def main() -> None:
     parser.add_argument("--results-dir", type=Path, default=Path("results"))
     args = parser.parse_args()
 
-    data = load_data(args.data_dir)
-    cases = []
-    for settlement_id in data["settlements"]:
-        cases.append(build_case(settlement_id, data))
+    investigator = ExceptionInvestigator(args.data_dir)
+    settlement_ids = list(investigator.data.settlement_by_id)
+    cases = [build_case(settlement_id, investigator) for settlement_id in settlement_ids]
 
     output = args.results_dir / "ai_case_packets.json"
     output.parent.mkdir(parents=True, exist_ok=True)
-    with output.open("w", encoding="utf-8") as file:
-        json.dump(cases, file, indent=2)
-
+    output.write_text(json.dumps(cases, indent=2), encoding="utf-8")
     print(f"Built {len(cases)} AI-ready case packets -> {output}")
 
 
