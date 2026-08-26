@@ -103,12 +103,15 @@ def investigate(case: dict[str, Any], data_dir: str = "data") -> dict[str, Any]:
     ]
 
     tool_calls = 0
+    response = None
     for _ in range(max_tool_rounds):
         response = chat(
             model=model,
             messages=messages,
             tools=tools,
-            think=True,
+            # Qwen3's internal thinking can be very slow on CPU. Keep the
+            # benchmark responsive; the evidence/tool calls remain intact.
+            think=False,
             format=DECISION_SCHEMA,
             options={"temperature": 0},
         )
@@ -138,7 +141,7 @@ def investigate(case: dict[str, Any], data_dir: str = "data") -> dict[str, Any]:
             )
             tool_calls += 1
 
-    if not response.message.content:
+    if response is None or not response.message.content:
         raise RuntimeError("Ollama returned no final decision.")
 
     decision = json.loads(response.message.content)
