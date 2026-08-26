@@ -131,23 +131,26 @@ if selected:
             None,
         )
 
-        if existing:
-            decision = existing
-            st.success("Cached local Qwen decision")
+        if st.button("Run local Qwen investigation", type="primary"):
+            with st.spinner("Investigating locally with Qwen 0.6B..."):
+                try:
+                    investigator = ExceptionInvestigator(DATA_DIR)
+                    case = build_case(selected_id, investigator)
+                    decision = investigate(case, str(DATA_DIR))
+                    decision["case_id"] = selected_id
+                    st.session_state[f"decision_{selected_id}"] = decision
+                except Exception as exc:
+                    st.error(f"Investigation failed: {exc}")
+                    decision = None
         else:
-            if st.button("Run local Qwen investigation", type="primary"):
-                with st.spinner("Investigating locally with Qwen 0.6B..."):
-                    try:
-                        investigator = ExceptionInvestigator(DATA_DIR)
-                        case = build_case(selected_id, investigator)
-                        decision = investigate(case, str(DATA_DIR))
-                        decision["case_id"] = selected_id
-                        st.session_state[f"decision_{selected_id}"] = decision
-                    except Exception as exc:
-                        st.error(f"Investigation failed: {exc}")
-                        decision = None
-            else:
-                decision = st.session_state.get(f"decision_{selected_id}")
+            decision = st.session_state.get(f"decision_{selected_id}")
+
+        if decision is None and existing:
+            decision = existing
+            st.info(
+                "Showing cached Qwen decision. "
+                "Click the button above to run a fresh investigation."
+            )
 
         if decision:
             d1, d2 = st.columns(2)
@@ -200,6 +203,6 @@ else:
 
 st.dataframe(
     display_rows,
-    use_container_width=True,
+    width="stretch",
     hide_index=True,
 )
