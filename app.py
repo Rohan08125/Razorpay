@@ -14,9 +14,6 @@ DATA_DIR = ROOT / "data"
 RESULTS_DIR = ROOT / "results"
 SRC_DIR = ROOT / "src"
 
-# The finance modules use direct sibling imports (e.g. finance_tools), while
-# Streamlit executes app.py from the repository root. Add src/ to the module
-# search path so the same modules work both from CLI scripts and this app.
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
@@ -60,9 +57,9 @@ def money(value: Any) -> str:
 
 settlements = read_csv("settlement_reconciliation.csv")
 bank_rows = read_csv("bank_reconciliation.csv")
-recon_summary = load_json("reconciliation_summary.json", {})
 ollama_summary = load_json("ollama_agent_summary.json", {})
 ollama_decisions = load_json("ollama_agent_decisions.json", [])
+ollama_evaluation = load_json("ollama_evaluation.json", {})
 
 st.title("💳 Financial Reconciliation AI")
 st.caption("Deterministic reconciliation + local Qwen 0.6B evidence explanation")
@@ -171,17 +168,53 @@ if selected:
 
 # ---- Benchmark ------------------------------------------------------------
 st.divider()
-st.subheader("AI Benchmark")
+st.subheader("Benchmark")
 
+if ollama_evaluation.get("ground_truth_cases"):
+    st.markdown("#### Ground-truth reconciliation benchmark")
+    st.caption(
+        "Measures the deterministic reconciliation engine against the controlled "
+        "corruption recorded in data/ground_truth.csv."
+    )
+
+    g1, g2, g3, g4 = st.columns(4)
+    g1.metric("Corruption recall", f"{ollama_evaluation.get('detection_recall', 0):.1%}")
+    g2.metric("Detection precision", f"{ollama_evaluation.get('detection_precision', 0):.1%}")
+    g3.metric("Detection F1", f"{ollama_evaluation.get('detection_f1', 0):.1%}")
+    g4.metric("Root-cause accuracy", f"{ollama_evaluation.get('ground_truth_root_cause_accuracy', 0):.1%}")
+
+    st.write(
+        f"Detected **{ollama_evaluation.get('corrupted_cases_detected', 0)}** of "
+        f"{ollama_evaluation.get('ground_truth_cases', 0)} corrupted settlements; "
+        f"missed **{ollama_evaluation.get('missed_corrupted_cases', 0)}** and produced "
+        f"**{ollama_evaluation.get('false_positive_cases', 0)}** false positives."
+    )
+
+    type_rows = []
+    for corruption_type, metrics in (ollama_evaluation.get("by_corruption_type") or {}).items():
+        type_rows.append({
+            "Corruption type": corruption_type,
+            "Cases": metrics.get("cases", 0),
+            "Root-cause accuracy": f"{metrics.get('root_cause_accuracy', 0):.1%}",
+        })
+    if type_rows:
+        st.dataframe(type_rows, width="stretch", hide_index=True)
+else:
+    st.warning(
+        "Ground-truth benchmark is unavailable. Run `py src\\evaluate_ollama.py` "
+        "after restoring the local data/ground_truth.csv dataset."
+    )
+
+st.markdown("#### Local Qwen consistency benchmark")
 b1, b2, b3, b4 = st.columns(4)
-b1.metric("Cases evaluated", str(ollama_summary.get("requested_cases", len(ollama_decisions))))
-b2.metric("Root-cause accuracy", "100%" if ollama_decisions else "—")
-b3.metric("Action accuracy", "98%" if ollama_decisions else "—")
-b4.metric("Fallback rate", "0%" if ollama_decisions else "—")
+b1.metric("Cases evaluated", str(ollama_evaluation.get("ollama_compared_cases", ollama_summary.get("requested_cases", len(ollama_decisions)))))
+b2.metric("Root-cause agreement", f"{ollama_evaluation.get('ollama_root_cause_accuracy', 0):.1%}" if ollama_evaluation else "—")
+b3.metric("Action agreement", f"{ollama_evaluation.get('ollama_action_accuracy', 0):.1%}" if ollama_evaluation else "—")
+b4.metric("Fallback rate", f"{ollama_evaluation.get('ollama_fallback_rate', 0):.1%}" if ollama_evaluation else "—")
 
 st.caption(
-    "Benchmark figures are based on the latest local Ollama evaluation. "
-    "The deterministic reconciliation engine remains the financial source of truth."
+    "The deterministic reconciliation engine remains the financial source of truth. "
+    "Qwen is used as an evidence-based explanation layer and cannot override the decision."
 )
 
 # ---- Settlement table -----------------------------------------------------
