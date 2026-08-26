@@ -15,13 +15,14 @@ Rules:
 - Use ONLY facts returned by the supplied finance tools and the case packet.
 - Never invent a transaction, amount, identifier, or accounting fact.
 - The case packet is an initial hint, not proof.
-- You MUST call get_settlement for the settlement under investigation before making a decision.
+- Your FIRST action MUST be a call to get_settlement for the settlement under investigation.
+- Do not produce a final decision until get_settlement has returned evidence.
 - If the settlement evidence references a payment that needs deeper verification, call get_payment and calculate_expected_net.
 - If bank evidence needs independent verification, call find_bank_transactions.
 - You may make multiple tool calls over multiple turns.
 - If evidence is insufficient or conflicting, use ESCALATE_FOR_MANUAL_REVIEW.
 - Keep confidence conservative; confidence means confidence in the root cause, not certainty that the system is correct.
-- Return ONLY the requested JSON decision after investigation.
+- After tool investigation, return ONLY the requested JSON decision.
 
 Allowed root causes:
 AMOUNT_MISMATCH, BANK_AMOUNT_MISMATCH, DUPLICATE_BANK_TRANSACTION,
@@ -90,11 +91,16 @@ def investigate(case: dict[str, Any], data_dir: str = "data") -> dict[str, Any]:
     tools = _make_tools(data)
     available = {fn.__name__: fn for fn in tools}
 
+    settlement_id = case.get("settlement_id")
+    if not settlement_id:
+        raise ValueError("Case is missing settlement_id")
+
     user_input = (
-        "Investigate this settlement exception. Verify the case packet with tools before deciding.\n\n"
+        "Investigate this settlement exception. The case packet is only an initial hint. "
+        "Your first response MUST call get_settlement with settlement_id="
+        + json.dumps(settlement_id)
+        + ". Do not answer yet.\n\n"
         + json.dumps(case, indent=2, ensure_ascii=False)
-        + "\n\nReturn the final decision using exactly this JSON schema: "
-        + json.dumps(DECISION_SCHEMA)
     )
 
     messages: list[dict[str, Any]] = [
@@ -104,15 +110,15 @@ def investigate(case: dict[str, Any], data_dir: str = "data") -> dict[str, Any]:
 
     tool_calls = 0
     response = None
+
+    # Phase 1: tool-driven investigation. Do NOT constrain this turn to JSON,
+    # because the model must be allowed to emit a tool call.
     for _ in range(max_tool_rounds):
         response = chat(
             model=model,
             messages=messages,
             tools=tools,
-            # Qwen3's internal thinking can be very slow on CPU. Keep the
-            # benchmark responsive; the evidence/tool calls remain intact.
             think=False,
-            format=DECISION_SCHEMA,
             options={"temperature": 0},
         )
         messages.append(response.message)
@@ -141,7 +147,31 @@ def investigate(case: dict[str, Any], data_dir: str = "data") -> dict[str, Any]:
             )
             tool_calls += 1
 
-    if response is None or not response.message.content:
+        # Once evidence has been collected, let the model decide whether it
+        # needs another tool. If it stops calling tools, we proceed to a
+        # separate structured final-decision turn below.
+
+    if tool_calls == 0:
+        raise RuntimeError("Ollama did not call a finance tool before deciding.")
+
+    # Phase 2: structured final decision. Keeping format here (rather than on
+    # the tool-calling turns) prevents JSON formatting from suppressing tools.
+    messages.append(
+        {
+            "role": "user",
+            "content": "Investigation is complete. Now return ONLY the final decision using exactly this JSON schema: "
+            + json.dumps(DECISION_SCHEMA),
+        }
+    )
+    response = chat(
+        model=model,
+        messages=messages,
+        think=False,
+        format=DECISION_SCHEMA,
+        options={"temperature": 0},
+    )
+
+    if not response.message.content:
         raise RuntimeError("Ollama returned no final decision.")
 
     decision = json.loads(response.message.content)
