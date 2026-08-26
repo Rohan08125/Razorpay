@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  compile:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Compile Python sources
+        run: python -m compileall -q app.py src
+
+      - name: Validate repository hygiene
+        run: |
+          test ! -d data || (echo "data/ should remain local/generated" && exit 1)
+          test ! -d results || (echo "results/ should remain local/generated" && exit 1)
+          test ! -d src/__pycache__ || (echo "Python cache should not be committed" && exit 1)
