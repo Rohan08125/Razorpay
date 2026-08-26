@@ -1,8 +1,4 @@
-"""Inject known reconciliation issues into clean synthetic financial data.
-
-The corruption engine keeps a separate ground-truth file so the application can
-be evaluated without ever seeing the labels during reconciliation.
-"""
+"""Inject known reconciliation issues into clean synthetic financial data."""
 
 from __future__ import annotations
 
@@ -44,31 +40,24 @@ def money(value: float) -> str:
     return f"{value:.2f}"
 
 
-def inject(
-    settlements: list[dict[str, str]],
-    items: list[dict[str, str]],
-    bank: list[dict[str, str]],
-    seed: int = 42,
-) -> list[dict[str, str]]:
+def inject(settlements, items, bank, seed: int = 42):
     rng = random.Random(seed)
-    truth: list[dict[str, str]] = []
+    truth = []
 
-    item_by_payment = {row["payment_id"]: row for row in items}
-    candidates = list(item_by_payment.values())
+    candidates = list(items)
     rng.shuffle(candidates)
-    used_payment_ids: set[str] = set()
+    used_payment_ids = set()
 
-    def record(corruption_type: str, entity_type: str, entity_id: str, details: str) -> None:
+    def record(corruption_type, settlement_id, details):
         truth.append(
             {
-                "entity_type": entity_type,
-                "entity_id": entity_id,
+                "entity_type": "settlement",
+                "entity_id": settlement_id,
                 "corruption_type": corruption_type,
                 "details": details,
             }
         )
 
-    # Item-level corruptions.
     offset = 0
     for corruption_type, rate in CORRUPTION_RATES.items():
         if corruption_type not in {
@@ -90,31 +79,28 @@ def inject(
 
         for row in selected:
             payment_id = row["payment_id"]
+            settlement_id = row["settlement_id"]
             if corruption_type == "MISSING_SETTLEMENT_ITEM":
                 items.remove(row)
-                record(corruption_type, "settlement_item", payment_id, "Settlement item removed")
+                record(corruption_type, settlement_id, f"Settlement item for {payment_id} removed")
             elif corruption_type == "DUPLICATE_SETTLEMENT_ITEM":
                 items.append(dict(row))
-                record(corruption_type, "settlement_item", payment_id, "Settlement item duplicated")
+                record(corruption_type, settlement_id, f"Settlement item for {payment_id} duplicated")
             elif corruption_type == "FEE_MISMATCH":
                 old = float(row["fee_amount"])
                 new = round(old * 1.35, 2)
                 row["fee_amount"] = money(new)
-                row["net_amount"] = money(
-                    float(row["gross_amount"]) - new - float(row["tax_amount"]) - float(row["refund_amount"])
-                )
-                record(corruption_type, "settlement_item", payment_id, f"Fee changed from {money(old)} to {money(new)}")
+                row["net_amount"] = money(float(row["gross_amount"]) - new - float(row["tax_amount"]) - float(row["refund_amount"]))
+                record(corruption_type, settlement_id, f"Fee changed from {money(old)} to {money(new)}")
             elif corruption_type == "AMOUNT_MISMATCH":
                 old = float(row["gross_amount"])
                 new = round(old * rng.choice((0.95, 1.05)), 2)
                 row["gross_amount"] = money(new)
-                record(corruption_type, "settlement_item", payment_id, f"Gross amount changed from {money(old)} to {money(new)}")
+                record(corruption_type, settlement_id, f"Gross amount changed from {money(old)} to {money(new)}")
 
-    # Bank-level corruptions are evaluated at the settlement level because the
-    # reconciliation engine matches bank transactions to settlement IDs.
     bank_candidates = list(bank)
     rng.shuffle(bank_candidates)
-    used_bank_ids: set[str] = set()
+    used_bank_ids = set()
 
     for corruption_type in (
         "MISSING_BANK_TRANSACTION",
@@ -136,33 +122,32 @@ def inject(
         for row in selected:
             bank_id = row["bank_transaction_id"]
             settlement_id = row["reference"]
-
             if corruption_type == "MISSING_BANK_TRANSACTION":
                 bank.remove(row)
-                record(corruption_type, "settlement", settlement_id, f"Bank credit {bank_id} removed")
+                record(corruption_type, settlement_id, f"Bank credit {bank_id} removed")
             elif corruption_type == "DUPLICATE_BANK_TRANSACTION":
                 bank.append(dict(row))
-                record(corruption_type, "settlement", settlement_id, f"Bank credit {bank_id} duplicated")
+                record(corruption_type, settlement_id, f"Bank credit {bank_id} duplicated")
             elif corruption_type == "BANK_AMOUNT_MISMATCH":
                 old = float(row["credit_amount"])
                 new = round(old - max(10.0, old * 0.01), 2)
                 row["credit_amount"] = money(new)
-                record(corruption_type, "settlement", settlement_id, f"Credit changed from {money(old)} to {money(new)}")
+                record(corruption_type, settlement_id, f"Credit changed from {money(old)} to {money(new)}")
             elif corruption_type == "WRONG_BANK_REFERENCE":
                 old = row["reference"]
                 other = rng.choice(bank_candidates)
                 row["reference"] = other["reference"]
-                record(corruption_type, "settlement", old, f"Bank reference changed from {old} to {row['reference']}")
+                record(corruption_type, old, f"Bank reference changed from {old} to {row['reference']}")
             elif corruption_type == "PARTIAL_SETTLEMENT":
                 old = float(row["credit_amount"])
                 new = round(old * 0.75, 2)
                 row["credit_amount"] = money(new)
-                record(corruption_type, "settlement", settlement_id, f"Credit reduced from {money(old)} to {money(new)}")
+                record(corruption_type, settlement_id, f"Credit reduced from {money(old)} to {money(new)}")
             elif corruption_type == "UNEXPLAINED_VARIANCE":
                 old = float(row["credit_amount"])
                 new = round(old - rng.uniform(50, 500), 2)
                 row["credit_amount"] = money(max(new, 0))
-                record(corruption_type, "settlement", settlement_id, f"Unexplained variance introduced from {money(old)} to {row['credit_amount']}")
+                record(corruption_type, settlement_id, f"Unexplained variance introduced from {money(old)} to {row['credit_amount']}")
 
     return truth
 
@@ -184,7 +169,6 @@ def main() -> None:
     write_csv(items, args.items)
     write_csv(bank, args.bank)
     write_csv(truth, Path("data/ground_truth.csv"))
-
     print(f"Injected {len(truth)} known issues")
     print("Ground truth -> data/ground_truth.csv")
 
