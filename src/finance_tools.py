@@ -8,8 +8,8 @@ from pathlib import Path
 
 
 class FinanceData:
-    def __init__(self, data_dir: Path = Path("data")) -> None:
-        self.data_dir = data_dir
+    def __init__(self, data_dir: Path | str = Path("data")) -> None:
+        self.data_dir = Path(data_dir)
         self.payments = self._read("payments.csv")
         self.adjustments = self._read("adjustments.csv")
         self.settlements = self._read("settlements.csv")
