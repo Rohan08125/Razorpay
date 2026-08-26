@@ -19,7 +19,7 @@ CORRUPTION_TO_ROOT_CAUSE = {
     "MISSING_SETTLEMENT_ITEM": "SETTLEMENT_ITEM_COUNT_MISMATCH",
     "DUPLICATE_SETTLEMENT_ITEM": "SETTLEMENT_ITEM_COUNT_MISMATCH",
     "FEE_MISMATCH": "SETTLEMENT_TOTAL_MISMATCH",
-    "AMOUNT_MISMATCH": "SETTLEMENT_TOTAL_MISMATCH",
+    "AMOUNT_MISMATCH": "SETTLEMENT_ITEM_AMOUNT_MISMATCH",
     "MISSING_BANK_TRANSACTION": "MISSING_BANK_CREDIT",
     "DUPLICATE_BANK_TRANSACTION": "DUPLICATE_OR_CONFLICTING_BANK_CREDIT",
     "BANK_AMOUNT_MISMATCH": "BANK_AMOUNT_VARIANCE",
@@ -128,7 +128,11 @@ def main() -> None:
         expected_action = normalize_action(expected.get("recommended_action"))
         confidence = float(ai_case.get("confidence", 0.0))
         confidence_sum += confidence
-        if confidence == 0.0:
+
+        # Fallback status is explicit. Older result files used confidence=0
+        # as a proxy, so retain that as a backward-compatible fallback signal.
+        explanation_source = ai_case.get("explanation_source")
+        if explanation_source == "deterministic_evidence_fallback" or confidence == 0.0:
             fallback_cases += 1
 
         root_match = ai_root == expected_root

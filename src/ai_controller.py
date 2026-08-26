@@ -9,15 +9,36 @@ from pathlib import Path
 from investigate_exception import ExceptionInvestigator
 
 
+# Confidence here is a presentation-level estimate for the deterministic
+# finding. It is not model confidence and must never be used to authorize a
+# financial action.
+ROOT_CAUSE_CONFIDENCE = {
+    "MISSING_BANK_CREDIT": 0.99,
+    "DUPLICATE_OR_CONFLICTING_BANK_CREDIT": 0.98,
+    "DUPLICATE_BANK_TRANSACTION": 0.98,
+    "MISSING_BANK_TRANSACTION": 0.97,
+    "WRONG_BANK_REFERENCE": 0.97,
+    "BANK_AMOUNT_MISMATCH": 0.97,
+    "BANK_AMOUNT_VARIANCE": 0.97,
+    "SETTLEMENT_ITEM_AMOUNT_MISMATCH": 0.97,
+    "SETTLEMENT_ITEM_COUNT_MISMATCH": 0.96,
+    "MISSING_SETTLEMENT_ITEM": 0.98,
+    "DUPLICATE_SETTLEMENT_ITEM": 0.98,
+    "FEE_MISMATCH": 0.97,
+    "AMOUNT_MISMATCH": 0.97,
+    "PARTIAL_SETTLEMENT": 0.96,
+    "SETTLEMENT_TOTAL_MISMATCH": 0.92,
+    "UNEXPLAINED_VARIANCE": 0.85,
+    "DATA_ERROR": 0.0,
+    "NONE": 0.35,
+}
+
+
 def confidence_for(root_cause: str, evidence_count: int) -> float:
-    base = {
-        "MISSING_BANK_CREDIT": 0.99,
-        "DUPLICATE_OR_CONFLICTING_BANK_CREDIT": 0.98,
-        "BANK_AMOUNT_VARIANCE": 0.95,
-        "SETTLEMENT_ITEM_COUNT_MISMATCH": 0.96,
-        "SETTLEMENT_TOTAL_MISMATCH": 0.92,
-        "NONE": 0.35,
-    }.get(root_cause, 0.50)
+    """Return a bounded confidence estimate for the deterministic finding."""
+    base = ROOT_CAUSE_CONFIDENCE.get(root_cause, 0.50)
+    if root_cause == "DATA_ERROR":
+        return 0.0
     return round(min(0.99, base + min(evidence_count, 3) * 0.01), 2)
 
 

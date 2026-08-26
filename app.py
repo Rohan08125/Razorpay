@@ -55,6 +55,14 @@ def money(value: Any) -> str:
         return "—"
 
 
+with st.sidebar:
+    st.markdown("### Dashboard controls")
+    if st.button("Refresh local results", width="stretch"):
+        st.cache_data.clear()
+        st.rerun()
+    st.caption("Refresh after rerunning reconciliation or Ollama evaluation scripts.")
+
+
 settlements = read_csv("settlement_reconciliation.csv")
 bank_rows = read_csv("bank_reconciliation.csv")
 ollama_summary = load_json("ollama_agent_summary.json", {})
@@ -150,9 +158,19 @@ if selected:
             )
 
         if decision:
-            d1, d2 = st.columns(2)
+            source = decision.get("explanation_source", "")
+            if source in {"deterministic_fallback", "deterministic_evidence_fallback"}:
+                st.warning(
+                    "Local model output was unavailable or invalid. "
+                    "Showing the deterministic evidence explanation instead."
+                )
+            else:
+                st.success("Local Qwen explanation available")
+
+            d1, d2, d3 = st.columns(3)
             d1.metric("Confidence", f"{float(decision.get('confidence', 0)):.0%}")
             d2.metric("Tool Calls", str(decision.get("tool_calls", 0)))
+            d3.metric("Decision source", "Fallback" if source in {"deterministic_fallback", "deterministic_evidence_fallback"} else "Qwen")
 
             st.markdown(f"**Root cause:** `{decision.get('root_cause', '—')}`")
             st.markdown(f"**Action:** `{decision.get('action', '—')}`")
@@ -192,11 +210,13 @@ if ollama_evaluation.get("ground_truth_cases"):
 
     type_rows = []
     for corruption_type, metrics in (ollama_evaluation.get("by_corruption_type") or {}).items():
-        type_rows.append({
-            "Corruption type": corruption_type,
-            "Cases": metrics.get("cases", 0),
-            "Root-cause accuracy": f"{metrics.get('root_cause_accuracy', 0):.1%}",
-        })
+        type_rows.append(
+            {
+                "Corruption type": corruption_type,
+                "Cases": metrics.get("cases", 0),
+                "Root-cause accuracy": f"{metrics.get('root_cause_accuracy', 0):.1%}",
+            }
+        )
     if type_rows:
         st.dataframe(type_rows, width="stretch", hide_index=True)
 else:
@@ -207,14 +227,45 @@ else:
 
 st.markdown("#### Local Qwen consistency benchmark")
 b1, b2, b3, b4 = st.columns(4)
-b1.metric("Cases evaluated", str(ollama_evaluation.get("ollama_compared_cases", ollama_summary.get("requested_cases", len(ollama_decisions)))))
-b2.metric("Root-cause agreement", f"{ollama_evaluation.get('ollama_root_cause_accuracy', 0):.1%}" if ollama_evaluation else "—")
-b3.metric("Action agreement", f"{ollama_evaluation.get('ollama_action_accuracy', 0):.1%}" if ollama_evaluation else "—")
-b4.metric("Fallback rate", f"{ollama_evaluation.get('ollama_fallback_rate', 0):.1%}" if ollama_evaluation else "—")
+b1.metric(
+    "Cases evaluated",
+    str(
+        ollama_evaluation.get(
+            "ollama_compared_cases",
+            ollama_summary.get("requested_cases", len(ollama_decisions)),
+        )
+    ),
+)
+b2.metric(
+    "Root-cause agreement",
+    f"{ollama_evaluation.get('ollama_root_cause_accuracy', 0):.1%}" if ollama_evaluation else "—",
+)
+b3.metric(
+    "Action agreement",
+    f"{ollama_evaluation.get('ollama_action_accuracy', 0):.1%}" if ollama_evaluation else "—",
+)
+b4.metric(
+    "Fallback rate",
+    f"{ollama_evaluation.get('ollama_fallback_rate', 0):.1%}" if ollama_evaluation else "—",
+)
+
+# ---- Finance operations loop ---------------------------------------------
+st.divider()
+st.subheader("Finance Operations Loop")
+st.caption("Operational view: detect → investigate → decide → explain.")
+
+o1, o2, o3, o4 = st.columns(4)
+o1.metric("Cases requiring review", f"{exceptions:,}")
+o2.metric("Reconciled automatically", f"{reconciled:,}")
+o3.metric("Exception rate", f"{(exceptions / total):.1%}" if total else "—")
+o4.metric(
+    "AI fallback rate",
+    f"{ollama_evaluation.get('ollama_fallback_rate', 0):.1%}" if ollama_evaluation else "—",
+)
 
 st.caption(
     "The deterministic reconciliation engine remains the financial source of truth. "
-    "Qwen is used as an evidence-based explanation layer and cannot override the decision."
+    "Qwen is an evidence-based explanation layer and cannot override the decision."
 )
 
 # ---- Settlement table -----------------------------------------------------

@@ -6,7 +6,6 @@ reasoning interface over these tools, not as the source of accounting truth.
 
 from __future__ import annotations
 
-from collections import defaultdict
 from pathlib import Path
 
 from finance_tools import FinanceData
@@ -36,6 +35,25 @@ class ExceptionInvestigator:
         if item_count != expected_count:
             findings.append("Settlement item count does not match recorded payment count.")
             evidence.append(f"Expected {expected_count} items; found {item_count}.")
+
+        # Each settlement item should preserve the original payment gross amount.
+        # This catches controlled AMOUNT_MISMATCH corruption even when the item
+        # count and aggregate settlement net still look internally consistent.
+        for item in items:
+            payment = self.data.payment_by_id.get(item["payment_id"])
+            if payment is None:
+                findings.append("Settlement item references an unknown payment.")
+                evidence.append(f"Unknown payment reference {item['payment_id']}.")
+                continue
+
+            payment_amount = round(float(payment["amount"]), 2)
+            item_gross = round(float(item["gross_amount"]), 2)
+            if abs(item_gross - payment_amount) > 0.01:
+                findings.append("Settlement item gross amount does not match the original payment amount.")
+                evidence.append(
+                    f"Payment {item['payment_id']}: expected gross ₹{payment_amount:.2f}; "
+                    f"settlement gross ₹{item_gross:.2f}."
+                )
 
         if abs(item_net - recorded_net) > 0.01:
             findings.append("Settlement net amount does not equal the sum of settlement items.")
@@ -76,6 +94,9 @@ class ExceptionInvestigator:
         elif any("Bank credit does not match" in x for x in findings):
             status = "ESCALATE"
             root_cause = "BANK_AMOUNT_VARIANCE"
+        elif any("gross amount" in x for x in findings):
+            status = "ESCALATE"
+            root_cause = "SETTLEMENT_ITEM_AMOUNT_MISMATCH"
         elif any("item count" in x for x in findings):
             status = "ESCALATE"
             root_cause = "SETTLEMENT_ITEM_COUNT_MISMATCH"

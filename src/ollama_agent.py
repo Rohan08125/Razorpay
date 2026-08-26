@@ -204,6 +204,7 @@ def investigate(case: dict[str, Any], data_dir: str = "data") -> dict[str, Any]:
     )
 
     client = Client(host=os.getenv("OLLAMA_HOST", "http://localhost:11434"))
+    tool_calls = 1
 
     # First try Ollama structured output. The schema is intentionally tiny so
     # the 0.6B model has as little formatting work as possible.
@@ -230,6 +231,7 @@ def investigate(case: dict[str, Any], data_dir: str = "data") -> dict[str, Any]:
     # Retry once with generic JSON mode before using the honest deterministic
     # evidence explanation.
     if explanation is None:
+        tool_calls += 1
         retry = client.chat(
             model=model,
             messages=[
@@ -281,6 +283,6 @@ def investigate(case: dict[str, Any], data_dir: str = "data") -> dict[str, Any]:
         "evidence_used": evidence_used[:3],
         "provider": "ollama",
         "model": model,
-        "tool_calls": 1,
+        "tool_calls": tool_calls,
         "explanation_source": source,
     }
