@@ -159,7 +159,7 @@ if selected:
 
         if decision:
             source = decision.get("explanation_source", "")
-            if source == "deterministic_fallback":
+            if source in {"deterministic_fallback", "deterministic_evidence_fallback"}:
                 st.warning(
                     "Local model output was unavailable or invalid. "
                     "Showing the deterministic evidence explanation instead."
@@ -170,7 +170,7 @@ if selected:
             d1, d2, d3 = st.columns(3)
             d1.metric("Confidence", f"{float(decision.get('confidence', 0)):.0%}")
             d2.metric("Tool Calls", str(decision.get("tool_calls", 0)))
-            d3.metric("Decision source", "Fallback" if source == "deterministic_fallback" else "Qwen")
+            d3.metric("Decision source", "Fallback" if source in {"deterministic_fallback", "deterministic_evidence_fallback"} else "Qwen")
 
             st.markdown(f"**Root cause:** `{decision.get('root_cause', '—')}`")
             st.markdown(f"**Action:** `{decision.get('action', '—')}`")
@@ -246,6 +246,20 @@ b3.metric(
 )
 b4.metric(
     "Fallback rate",
+    f"{ollama_evaluation.get('ollama_fallback_rate', 0):.1%}" if ollama_evaluation else "—",
+)
+
+# ---- Finance operations loop ---------------------------------------------
+st.divider()
+st.subheader("Finance Operations Loop")
+st.caption("Operational view: detect → investigate → decide → explain.")
+
+o1, o2, o3, o4 = st.columns(4)
+o1.metric("Cases requiring review", f"{exceptions:,}")
+o2.metric("Reconciled automatically", f"{reconciled:,}")
+o3.metric("Exception rate", f"{(exceptions / total):.1%}" if total else "—")
+o4.metric(
+    "AI fallback rate",
     f"{ollama_evaluation.get('ollama_fallback_rate', 0):.1%}" if ollama_evaluation else "—",
 )
 
