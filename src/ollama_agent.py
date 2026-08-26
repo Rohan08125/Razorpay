@@ -91,9 +91,11 @@ def investigate(case: dict[str, Any], data_dir: str = "data") -> dict[str, Any]:
     tools = _make_tools(data)
     available = {fn.__name__: fn for fn in tools}
 
-    settlement_id = case.get("settlement_id")
+    # build_case historically names this field case_id. Accept both names so
+    # the local agent remains compatible with the existing controller output.
+    settlement_id = case.get("settlement_id") or case.get("case_id")
     if not settlement_id:
-        raise ValueError("Case is missing settlement_id")
+        raise ValueError("Case is missing settlement_id/case_id")
 
     user_input = (
         "Investigate this settlement exception. The case packet is only an initial hint. "
@@ -146,10 +148,6 @@ def investigate(case: dict[str, Any], data_dir: str = "data") -> dict[str, Any]:
                 }
             )
             tool_calls += 1
-
-        # Once evidence has been collected, let the model decide whether it
-        # needs another tool. If it stops calling tools, we proceed to a
-        # separate structured final-decision turn below.
 
     if tool_calls == 0:
         raise RuntimeError("Ollama did not call a finance tool before deciding.")
