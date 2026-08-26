@@ -55,6 +55,16 @@ def money(value: Any) -> str:
         return "—"
 
 
+# Generated reconciliation results are intentionally cached for a fast UI.
+# This button gives a clean way to pick up newly generated local results.
+with st.sidebar:
+    st.markdown("### Dashboard controls")
+    if st.button("Refresh local results", width="stretch"):
+        st.cache_data.clear()
+        st.rerun()
+    st.caption("Refresh after rerunning the reconciliation or Ollama evaluation scripts.")
+
+
 settlements = read_csv("settlement_reconciliation.csv")
 bank_rows = read_csv("bank_reconciliation.csv")
 ollama_summary = load_json("ollama_agent_summary.json", {})
