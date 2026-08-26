@@ -1,4 +1,4 @@
-"""Evaluate local Ollama decisions against the deterministic controller."""
+"""Evaluate local Ollama decisions against deterministic outcomes and actions."""
 
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ def normalize_action(action: str | None) -> str:
         "Review settlement item": "REVIEW_SETTLEMENT_ITEM",
         "ESCALATE_FOR_MANUAL_REVIEW": "ESCALATE_FOR_MANUAL_REVIEW",
         "Escalate for manual review": "ESCALATE_FOR_MANUAL_REVIEW",
+        "Escalate for missing bank credit investigation.": "ESCALATE_FOR_MANUAL_REVIEW",
     }
     return mapping.get(action or "", action or "UNKNOWN")
 
@@ -29,22 +30,18 @@ def main() -> None:
     ollama_path = RESULTS_DIR / "ollama_agent_decisions.json"
     ollama_cases = json.loads(ollama_path.read_text(encoding="utf-8"))
 
-    # Build the expected cases fresh from the deterministic engine rather than
-    # comparing against an older/stale controller_cases.json result file.
     investigator = ExceptionInvestigator(DATA_DIR)
-    expected_by_id = {}
-    for settlement_id in investigator.data.settlement_by_id:
-        expected_by_id[settlement_id] = build_case(
-            settlement_id,
-            investigator,
-        )
+    expected_by_id = {
+        settlement_id: build_case(settlement_id, investigator)
+        for settlement_id in investigator.data.settlement_by_id
+    }
 
     compared = 0
     root_matches = 0
     action_matches = 0
     confidence_sum = 0.0
     fallback_cases = 0
-    disagreements = []
+    disagreements: list[dict] = []
 
     for ai_case in ollama_cases:
         case_id = ai_case.get("case_id")
@@ -58,9 +55,7 @@ def main() -> None:
         expected_root = expected.get("root_cause")
 
         ai_action = normalize_action(ai_case.get("action"))
-        expected_action = normalize_action(
-            expected.get("recommended_action")
-        )
+        expected_action = normalize_action(expected.get("recommended_action"))
 
         confidence = float(ai_case.get("confidence", 0.0))
         confidence_sum += confidence
@@ -71,10 +66,8 @@ def main() -> None:
         root_match = ai_root == expected_root
         action_match = ai_action == expected_action
 
-        if root_match:
-            root_matches += 1
-        if action_match:
-            action_matches += 1
+        root_matches += int(root_match)
+        action_matches += int(action_match)
 
         if not root_match or not action_match:
             disagreements.append(
@@ -88,16 +81,10 @@ def main() -> None:
                 }
             )
 
-    if compared:
-        root_accuracy = root_matches / compared
-        action_accuracy = action_matches / compared
-        average_confidence = confidence_sum / compared
-        fallback_rate = fallback_cases / compared
-    else:
-        root_accuracy = 0.0
-        action_accuracy = 0.0
-        average_confidence = 0.0
-        fallback_rate = 0.0
+    root_accuracy = root_matches / compared if compared else 0.0
+    action_accuracy = action_matches / compared if compared else 0.0
+    average_confidence = confidence_sum / compared if compared else 0.0
+    fallback_rate = fallback_cases / compared if compared else 0.0
 
     result = {
         "ollama_cases": len(ollama_cases),
@@ -112,8 +99,8 @@ def main() -> None:
         "average_confidence": round(average_confidence, 4),
         "disagreements": disagreements,
         "note": (
-            "Expected decisions are rebuilt from the deterministic engine; "
-            "ground_truth.csv is not consumed by the AI controller."
+            "Expected outcomes are rebuilt from the deterministic investigation engine. "
+            "Ground truth is not supplied to Ollama."
         ),
     }
 
